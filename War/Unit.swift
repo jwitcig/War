@@ -17,7 +17,13 @@ class Unit: GKEntity {
     }
     
     lazy var renderComponent: RenderComponent = {
-        let node = SKShapeNode(circleOfRadius: 10)
+        var radius: CGFloat = 3
+        switch self.type {
+        case .normal: radius = 10
+        case .large:  radius = 20
+        }
+        
+        let node = SKShapeNode(circleOfRadius: radius)
         node.entity = self
         node.name = "unit"
         
@@ -27,14 +33,18 @@ class Unit: GKEntity {
     }()
     
     lazy var moveComponent: MoveComponent = {
-        let component = MoveComponent(maxSpeed: 100, maxAcceleration: 1000, radius: 0)
+        let component = MoveComponent(maxSpeed: 100, maxAcceleration: 1000, radius: Float(self.node.frame.width))
         component.behavior = self.moveBehavior
         return component
     }()
     
-    lazy var moveBehavior: MoveBehavior? = {
+    lazy var moveBehavior: GKBehavior? = {
         return self.newMoveBehavior()
     }()
+    
+    var healthComponent: HealthComponent {
+        return component(ofType: HealthComponent.self)!
+    }
     
     var teamComponent: TeamComponent? {
         return component(ofType: TeamComponent.self)
@@ -43,6 +53,8 @@ class Unit: GKEntity {
     var team: Infantry? {
         return teamComponent?.team
     }
+    
+    var type: UnitType
     
     private var closestBarrier: Barrier? {
         get {
@@ -64,13 +76,28 @@ class Unit: GKEntity {
         }
     }
     
-    init(team: Infantry, position: CGPoint? = nil) {
+    init(team: Infantry, type: UnitType, position: CGPoint? = nil) {
+        self.type = type
+        
         super.init()
         
-        addComponent(TeamComponent(team: team, side: team.side))
+        var health = 0
+        switch type {
+        case .normal: health = 100
+        case .large: health = 175
+        }
 
+        addComponent(TeamComponent(team: team, side: team.side))
         addComponent(renderComponent)
         addComponent(moveComponent)
+        addComponent(HealthComponent(health: health))
+        
+        node.physicsBody = SKPhysicsBody(circleOfRadius: node.frame.width/2)
+        node.physicsBody!.isDynamic = false
+        node.physicsBody!.categoryBitMask = Entity.unit.rawValue
+        node.physicsBody!.collisionBitMask = Entity.none.rawValue
+        node.physicsBody!.contactTestBitMask = Entity.bullet.rawValue
+        addComponent(PhysicsComponent(physicsBody: node.physicsBody!))
         
         node.position = position ?? team.deployZone.newPoint()
     }
@@ -79,7 +106,7 @@ class Unit: GKEntity {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func newMoveBehavior() -> MoveBehavior? {        
+    func newMoveBehavior(destination: CGPoint? = nil) -> MoveToPath? {
         guard let barrier = closestBarrier?.node else { return nil }
         let unit = node
         guard let scene = unit.scene else { return nil }
@@ -97,16 +124,13 @@ class Unit: GKEntity {
         let side: CGFloat = team?.side == .top ? 1 : -1
         
         let points: [float2] = [
-            CGPoint(x: -size.width/2,
-                    y: displacement.y * side),
-            CGPoint(x: size.width/2,
-                    y: displacement.y * side),
+            CGPoint(x: -size.width/2, y: displacement.y * side),
+            CGPoint(x: size.width/2, y: displacement.y * side),
         ].map {
             let converted = scene.convert($0, from: barrier)
             return float2(x: Float(converted.x), y: Float(converted.y))
         }
-        
-        return MoveBehavior(speed: 100,
+        return MoveToPath(speed: 100,
                            stayOn: GKPath(points: points, radius: 0, cyclical: false))
     }
     
@@ -115,4 +139,22 @@ class Unit: GKEntity {
         moveComponent.behavior = moveBehavior
     }
     
+    lazy var stopRandomizer = {
+        return GKRandomDistribution(lowestValue: 0, highestValue: 30)
+    }()
+    
+    override func update(deltaTime seconds: TimeInterval) {
+        if let destinationBehavior = moveComponent.behavior as? MoveToDestination {
+            if node.position.distance(toPoint: destinationBehavior.destination) < 80 {
+                if stopRandomizer.nextInt() == 0 {
+                    moveComponent.behavior = Stop()
+                }
+            }
+        }
+    }
+    
+}
+
+enum UnitType {
+    case normal, large
 }

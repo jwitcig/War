@@ -6,64 +6,39 @@
 //  Copyright © 2016 JwitApps. All rights reserved.
 //
 
-import SpriteKit
 import GameplayKit
+import SpriteKit
 
-struct AreaRange {
-    let x: GKRandomDistribution
-    let y: GKRandomDistribution
+class GameScene: SKScene, SKPhysicsContactDelegate {
     
-    init(x: GKRandomDistribution, y: GKRandomDistribution) {
-        self.x = x
-        self.y = y
-    }
-    
-    func newPoint() -> CGPoint {
-        return CGPoint(x: x.nextInt(), y: y.nextInt())
-    }
-}
-
-enum Side {
-    case top, bottom
-}
-
-class GameScene: SKScene {
-    
-    var entities = [GKEntity]()
     var graphs = [String : GKGraph]()
     
     private var lastUpdateTime : TimeInterval = 0
     
     private var reinforcementDuration: CGFloat = 5
     
-    lazy private var entityManager: EntityManager = {
-        let manager = EntityManager(scene: self)
-        manager.componentSystems = [
+    lazy var entityManager: EntityManager = {
+        return EntityManager(scene: self, systems: [
             GKComponentSystem(componentClass: MoveComponent.self),
-        ]
-        return manager
+        ])
     }()
     
     private lazy var infantries: [Infantry] = {[
         self.alliedInfantry, self.axisInfantry,
     ]}()
     private lazy var alliedInfantry: Infantry = {
-        let xDistribution = GKRandomDistribution(lowestValue: Int(-self.frame.width)/2, highestValue: Int(self.frame.width)/2)
-        let yDistribution = GKRandomDistribution(lowestValue: Int(-self.frame.height)/2, highestValue: Int(-self.frame.height)/2)
-
-        return Infantry(player: "allied",
-                    deployZone: AreaRange(x: xDistribution, y: yDistribution),
-                         color: .blue,
-                          side: .bottom)
+        let area = AreaRange(x: GKRandomDistribution(lowestValue: Int(-self.frame.width)/2,
+                                                    highestValue: Int(self.frame.width)/2),
+                             y: GKRandomDistribution(lowestValue: Int(-self.frame.height)/2,
+                                                    highestValue: Int(-self.frame.height)/2))
+        return Infantry(player: "allied", deployZone: area, color: .blue, side: .bottom)
     }()
     private lazy var axisInfantry: Infantry = {
-        let xDistribution = GKRandomDistribution(lowestValue: Int(-self.frame.width)/2, highestValue: Int(self.frame.width)/2)
-        let yDistribution = GKRandomDistribution(lowestValue: Int(self.frame.height)/2, highestValue: Int(self.frame.height)/2)
-    
-        return Infantry(player: "axis",
-                    deployZone: AreaRange(x: xDistribution, y: yDistribution),
-                         color: .red,
-                          side: .top)
+        let area = AreaRange(x: GKRandomDistribution(lowestValue: Int(-self.frame.width/2),
+                                                    highestValue: Int(self.frame.width/2)),
+                             y: GKRandomDistribution(lowestValue: Int(self.frame.height/2),
+                                                    highestValue: Int(self.frame.height/2)))
+        return Infantry(player: "axis", deployZone: area, color: .red, side: .top)
     }()
 
     lazy var drawer: Drawer = {
@@ -73,7 +48,7 @@ class GameScene: SKScene {
         drawer.strokeColor = .darkGray
         drawer.customConstraints = [
             SKConstraint.positionX(SKRange(constantValue: 0)),
-            SKConstraint.positionY(SKRange(constantValue: -self.frame.height/2+drawer.frame.height/2)),
+            SKConstraint.positionY(SKRange(constantValue: (drawer.frame.height-self.frame.height)/2)),
         ].map {
             $0.enabled = false
             return $0
@@ -84,20 +59,34 @@ class GameScene: SKScene {
     
     var touchOnDrawer = false
     
+    var selection: UnitSelection?
+    
     override func didMove(to view: SKView) {
         self.view?.ignoresSiblingOrder = true
-        
-        addChild(self.drawer)
-        drawer.customConstraints.forEach{$0.enabled = true}
-        setup(drawer: drawer)
-        
+        physicsWorld.contactDelegate = self
         physicsWorld.gravity = CGVector(dx: 0, dy: 0)
         physicsWorld.speed = 1
+        self.physicsBody = {
+            let buffer: CGFloat = 50
+            let body = SKPhysicsBody(edgeLoopFrom: CGRect(x: -self.frame.width/2-buffer,
+                                                          y: -self.frame.height/2-buffer,
+                                                      width: self.frame.width+buffer*2,
+                                                     height: self.frame.height+buffer*2))
+            body.isDynamic = false
+            body.collisionBitMask = Entity.none.rawValue
+            body.contactTestBitMask = Entity.evironmentEdge.rawValue
+            return body
+        }()
+        
+        addChild(drawer)
+        drawer.customConstraints.forEach{$0.enabled = true}
+        setup(drawer: drawer)
         
         let barrier = Barrier(position: CGPoint(x: 200, y: 200))
         entityManager.add(entity: barrier)
         
-        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { timer in
+        (0..<50).forEach{ _ in           self.incrementInfantryCount()}
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { timer in
            self.incrementInfantryCount()
         }
     }
@@ -108,39 +97,89 @@ class GameScene: SKScene {
         drawer.add(item: barrier.node, withEntity: {Barrier()})
     }
     
-    func incrementInfantryCount() {
-        self.infantries.forEach{$0.addSupplement()}
+    var unitTypeDistribution = GKRandomDistribution(lowestValue: 0, highestValue: 3)
     
-        let alliedUnit = Unit(team: alliedInfantry)
+    func incrementInfantryCount() {
+        infantries.forEach{$0.addSupplement()}
+        
+        var type: UnitType = .normal
+        if unitTypeDistribution.nextInt() == 0 {
+            type = .large
+        }
+    
+        let alliedUnit = Unit(team: alliedInfantry, type: type)
         alliedUnit.addComponent(ShootComponent(fireRate: 1))
         entityManager.add(entity: alliedUnit)
         alliedUnit.updateDestination()
         
-        let axisUnit = Unit(team: axisInfantry)
+        type = .normal
+        if unitTypeDistribution.nextInt() == 0 {
+            type = .large
+        }
+        
+        let axisUnit = Unit(team: axisInfantry, type: type)
+        axisUnit.addComponent(ShootComponent(fireRate: 1))
         entityManager.add(entity: axisUnit)
         axisUnit.updateDestination()
     }
     
-    func touchDown(atPoint pos : CGPoint) {
-        guard !nodes(at: pos).contains(self.drawer) else {
-            drawer.touchDown(atPoint: pos)
+    func touchDown(atPoint position: CGPoint) {
+        guard !nodes(at: position).contains(self.drawer) else {
+            drawer.touchDown(atPoint: position)
             self.touchOnDrawer = true
             return
         }
+    
+        guard selection == nil else { return }
+        
+        let selectionCircle = SizeableCircle(radius: 0, position: position)
+        selectionCircle.position = position
+        selectionCircle.fillColor = .clear
+        selectionCircle.strokeColor = .blue
+        addChild(selectionCircle)
+        
+        selection = UnitSelection(scene: self, position: position, node: selectionCircle)
     }
     
-    func touchMoved(toPoint pos : CGPoint) {
+    func touchMoved(toPoint position: CGPoint) {
         guard !self.touchOnDrawer else {
-            drawer.touchMoved(toPoint: pos)
+            drawer.touchMoved(toPoint: position)
             return
         }
+        
+        selection?.finalTouch = position
     }
     
-    func touchUp(atPoint pos : CGPoint) {
-        guard !nodes(at: pos).contains(self.drawer) && !self.touchOnDrawer else {
-            drawer.touchUp(atPoint: pos)
+    func touchUp(atPoint position: CGPoint) {
+        guard !nodes(at: position).contains(self.drawer) && !self.touchOnDrawer else {
+            drawer.touchUp(atPoint: position)
             self.touchOnDrawer = false
             return
+        }
+        
+        guard let selection = selection else { return }
+        
+        if selection.complete {
+            let agents = selection.units.map{$0.moveComponent}
+            let moveToDestination = MoveToDestination(speed: 100,
+                                                destination: position,
+                                             flockingAgents: agents)
+            
+            agents.forEach{$0.behavior = moveToDestination}
+            self.selection = nil
+        } else {
+            let sequence = SKAction.sequence({
+                let selection = SKAction.run {
+                    selection.units = selection.selectUnits()
+                    selection.complete = true
+                }
+                let wait = SKAction.wait(forDuration: 0.2)
+                let fadeOut = SKAction.fadeOut(withDuration: 0.3)
+                let remove = SKAction.removeFromParent()
+                return [selection, wait, fadeOut, remove]
+            }())
+            
+            selection.node.run(sequence)
         }
     }
     
@@ -161,17 +200,127 @@ class GameScene: SKScene {
     }
     
     override func update(_ currentTime: TimeInterval) {
-        if self.lastUpdateTime == 0 {
-            self.lastUpdateTime = currentTime
+        if lastUpdateTime == 0 {
+            lastUpdateTime = currentTime
         }
         let dt = currentTime - self.lastUpdateTime
         
-        self.entityManager.update(deltaTime: dt)
+        entityManager.update(deltaTime: dt)
         
-        self.entities.forEach { $0.update(deltaTime: dt) }
-        
-        self.lastUpdateTime = currentTime
+        lastUpdateTime = currentTime
     }
+    
+    func didBegin(_ contact: SKPhysicsContact) {
+        let bodies = [contact.bodyA, contact.bodyB]
+        
+        func entity(withName name: String) -> GKEntity? {
+            return bodies.filter {$0.node?.name==name}.first?.node?.entity
+        }
+        
+        func body(ofType entity: Entity) -> SKPhysicsBody? {
+            return bodies.filter { $0.categoryBitMask ==  entity.rawValue }.first
+        }
+        
+        let environmentEdge =   body(ofType: .evironmentEdge)
+        let unit =              entity(withName: "unit") as? Unit
+        let _ =                 entity(withName: "barrier") as? Barrier
+        let bullet =            entity(withName: "bullet") as? Bullet
+        
+        if let unit = unit, let bullet = bullet {
+            guard let shooterTeam = (bullet.shooter as? Unit)?.team else { return }
+            guard let unitTeam = unit.team else { return }
+            
+            guard shooterTeam != unitTeam else { return }
+            
+            let death = unit.healthComponent.doDamage(amount: bullet.damage)
+            if death {
+                let fade = SKAction.fadeOut(withDuration: 0.5)
+                let remove = SKAction.run {
+                    self.entityManager.remove(entity: unit)
+                }
+                unit.node.run(SKAction.sequence([fade, remove]))
+            }
+            entityManager.remove(entity: bullet)
+        }
+        
+        if let _ = environmentEdge, let bullet = bullet {
+            entityManager.remove(entity: bullet)
+        }
+        
+    }
+}
+
+class SizeableCircle: SKShapeNode {
+    
+    var radius: CGFloat {
+        didSet {
+            self.path = SizeableCircle.path(radius: self.radius)
+        }
+    }
+    
+    init(radius: CGFloat, position: CGPoint) {
+        self.radius = radius
+        
+        super.init()
+        
+        self.path = SizeableCircle.path(radius: self.radius)
+        self.position = position
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    class func path(radius: CGFloat) -> CGMutablePath {
+        let path = CGMutablePath()
+        path.addArc(center: .zero, radius: radius, startAngle: 0, endAngle: CGFloat(2*M_PI), clockwise: true)
+        return path
+    }
+    
+}
+
+class UnitSelection {
+    
+    var scene: GameScene
+    
+    var units = [Unit]()
+    
+    var complete = false
+    
+    var node: SizeableCircle
+    
+    let originalTouch: CGPoint
+    var finalTouch: CGPoint {
+        didSet {
+            node.radius = finalTouch.distance(toPoint: midpoint)
+            node.position = midpoint
+        }
+    }
+    var midpoint: CGPoint {
+        return CGPoint(x: (originalTouch.x+finalTouch.x)/2,
+                       y: (originalTouch.y+finalTouch.y)/2)
+    }
+    
+    init(scene: GameScene, position: CGPoint, node: SizeableCircle) {
+        self.node = node
+        self.originalTouch = position
+        self.finalTouch = position
+
+        self.scene = scene
+    }
+    
+    func selectUnits() -> [Unit] {
+        var inRange = [Unit]()
+        scene.enumerateChildNodes(withName: "unit") { node, stop in
+            guard let unit = node.entity as? Unit else { return }
+            
+            if node.position.distance(toPoint: self.midpoint) <= self.node.radius {
+                inRange.append(unit)
+            }
+        }
+        return inRange
+    }
+    
 }
 
 class Infantry {
@@ -187,7 +336,7 @@ class Infantry {
     var count = 0
     
     var supplementSize = 1
-  
+    
     init(player: String, deployZone: AreaRange, color: SKColor, side: Side) {
         self.player = player
         self.deployZone = deployZone
@@ -201,162 +350,34 @@ class Infantry {
     
 }
 
-class RenderComponent: GKComponent {
-    
-    let node: SKNode
-    
-    init(node: SKNode) {
-        self.node = node
-        super.init()
-    }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
+func ==(lhs: Infantry, rhs: Infantry) -> Bool {
+    return lhs.player == rhs.player
 }
 
-class TeamComponent: GKComponent {
-    
-    let team: Infantry
-    let side: Side
-    
-    init(team: Infantry, side: Side) {
-        self.team = team
-        self.side = side
-        super.init()
-    }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
+func !=(lhs: Infantry, rhs: Infantry) -> Bool {
+    return !(lhs == rhs)
 }
 
-class RadialGravityComponent: GKComponent {
+struct AreaRange {
+    let x: GKRandomDistribution
+    let y: GKRandomDistribution
     
-    let gravitationalField = SKFieldNode.vortexField()
-    
-    override init() {
-        gravitationalField.strength = 300
-        gravitationalField.falloff = 0
-        
-        super.init()
+    init(x: GKRandomDistribution, y: GKRandomDistribution) {
+        self.x = x
+        self.y = y
     }
     
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+    func newPoint() -> CGPoint {
+        return CGPoint(x: x.nextInt(), y: y.nextInt())
     }
 }
 
-class PhysicsComponent: GKComponent {
-    
-    let physicsBody: SKPhysicsBody
-    
-    init(physicsBody: SKPhysicsBody) {
-        self.physicsBody = physicsBody
-        
-        super.init()
-    }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+enum Side {
+    case top, bottom
 }
 
-class TouchComponent: GKComponent {
-    typealias TouchBlock = ((UITouch, UIEvent?)->())
-    
-    var touchBegan: TouchBlock? = nil
-    var touchMoved: TouchBlock? = nil
-    var touchEnded: TouchBlock? = nil
-    var touchCancelled: TouchBlock? = nil
-    
-    init(touchBegan: TouchBlock? = nil, touchMoved: TouchBlock? = nil, touchEnded: TouchBlock? = nil, touchCancelled: TouchBlock? = nil) {
-        self.touchBegan = touchBegan
-        self.touchMoved = touchMoved
-        self.touchEnded = touchEnded
-        self.touchCancelled = touchCancelled
-        super.init()
-    }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-class MoveComponent : GKAgent2D, GKAgentDelegate {
-    
-    init(maxSpeed: Float, maxAcceleration: Float, radius: Float) {
-        super.init()
-        self.delegate = self
-        self.maxSpeed = maxSpeed
-        self.maxAcceleration = maxAcceleration
-        self.radius = radius
-        self.mass = 1
-    }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    func agentWillUpdate(_ agent: GKAgent) {
-        guard let node = entity?.component(ofType: RenderComponent.self)?.node else { return }
-        position = float2(x: Float(node.position.x), y: Float(node.position.y))
-    }
-    
-    func agentDidUpdate(_ agent: GKAgent) {
-        guard let node = entity?.component(ofType: RenderComponent.self)?.node else { return }
-        node.position = CGPoint(x: CGFloat(position.x), y: CGFloat(position.y))
-    }
-}
-
-class MoveBehavior: GKBehavior {
-    
-    init(speed: Float, stayOn path: GKPath? = nil) {
-        super.init()
-        
-//        if speed > 0 {
-//            setWeight(0, for: GKGoal(toWander: speed))
-//        }
-        
-        if let path = path {
-            setWeight(50, for: GKGoal(toStayOn: path, maxPredictionTime: 1))
-        }
-    }
-}
-
-class ShootComponent: GKComponent {
-    
-    var fireRate: Int
-    
-    lazy var gun: SKNode = {
-        guard let parent = self.entity?.component(ofType: RenderComponent.self)?.node else {
-            fatalError("entities with ShootComponent must have a RenderComponent")
-        }
-        let node = SKShapeNode(rectOf: CGSize(width: 5, height: 20))
-        node.fillColor = .black
-        node.strokeColor = .black
-        node.position = CGPoint(x: parent.frame.width/2, y: 10)
-        return node
-    }()
-    
-    init(fireRate: Int) {
-        self.fireRate = fireRate
-        super.init()
-    }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func didAddToEntity() {
-        guard let parent = entity?.component(ofType: RenderComponent.self)?.node else {
-            fatalError("entities with ShootComponent must have a RenderComponent")
-        }
-        parent.addChild(gun)
-    }
-    
+enum Entity: UInt32 {
+    case none, unit, barrier, bullet, evironmentEdge
 }
 
 extension CGPoint {

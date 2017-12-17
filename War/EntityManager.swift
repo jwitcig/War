@@ -31,8 +31,9 @@ class EntityManager {
     
     let scene: SKScene
     
-    init(scene: SKScene) {
+    init(scene: SKScene, systems: [GKComponentSystem<GKComponent>]) {
         self.scene = scene
+        self.componentSystems = systems
     }
     
     func add(entity: GKEntity) {
@@ -55,13 +56,12 @@ class EntityManager {
     }
     
     func update(deltaTime: CFTimeInterval) {
-        for componentSystem in componentSystems {
-            componentSystem.update(deltaTime: deltaTime)
-        }
+        componentSystems.forEach { $0.update(deltaTime: deltaTime) }
+        entities.forEach { $0.update(deltaTime: deltaTime) }
         
-        for curRemove in toRemove {
-            for componentSystem in componentSystems {
-                componentSystem.removeComponent(foundIn: curRemove)
+        toRemove.forEach { currentRemove in
+            self.componentSystems.forEach {
+                $0.removeComponent(foundIn: currentRemove)
             }
         }
         toRemove.removeAll()
